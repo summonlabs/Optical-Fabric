@@ -1,0 +1,16 @@
+# Build outputs
+build/
+out/
+install/
+cmake-build-*/
+
+# Editor and OS noise
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+desktop.ini
+
+# Local validation scratch
+_local/

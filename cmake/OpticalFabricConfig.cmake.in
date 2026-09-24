@@ -1,0 +1,60 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+if(NOT WIN32)
+  find_dependency(Threads)
+endif()
+
+include("${CMAKE_CURRENT_LIST_DIR}/OpticalFabricTargets.cmake")
+
+set(OPTICAL_FABRIC_VERSION "@PROJECT_VERSION@")
+
+# ---------------------------------------------------------------------------
+# Fail-fast package self-check: the documented imported target must exist and
+# must expose the umbrella header it promises.
+# ---------------------------------------------------------------------------
+if(NOT TARGET SummonSoftwareLabs::OpticalFabric)
+  set(OpticalFabric_FOUND FALSE)
+  set(OpticalFabric_NOT_FOUND_MESSAGE
+    "the installed OpticalFabric package does not export SummonSoftwareLabs::OpticalFabric")
+  return()
+endif()
+
+get_target_property(_optical_fabric_includes SummonSoftwareLabs::OpticalFabric INTERFACE_INCLUDE_DIRECTORIES)
+if(NOT _optical_fabric_includes)
+  set(OpticalFabric_FOUND FALSE)
+  set(OpticalFabric_NOT_FOUND_MESSAGE
+    "SummonSoftwareLabs::OpticalFabric does not declare INTERFACE_INCLUDE_DIRECTORIES")
+  return()
+endif()
+
+set(_optical_fabric_token "$")
+string(APPEND _optical_fabric_token "{_IMPORT_PREFIX}")
+
+set(_optical_fabric_umbrella_found FALSE)
+foreach(_optical_fabric_dir IN LISTS _optical_fabric_includes)
+  if(_optical_fabric_dir MATCHES "^\\$<")
+    continue()
+  endif()
+  string(REPLACE "${_optical_fabric_token}" "${PACKAGE_PREFIX_DIR}"
+                 _optical_fabric_resolved "${_optical_fabric_dir}")
+  if(EXISTS "${_optical_fabric_resolved}/optical_fabric/optical_fabric.hpp")
+    set(_optical_fabric_umbrella_found TRUE)
+  endif()
+endforeach()
+
+if(NOT _optical_fabric_umbrella_found)
+  set(OpticalFabric_FOUND FALSE)
+  set(OpticalFabric_NOT_FOUND_MESSAGE
+    "the installed OpticalFabric package is missing optical_fabric/optical_fabric.hpp")
+  return()
+endif()
+
+unset(_optical_fabric_includes)
+unset(_optical_fabric_token)
+unset(_optical_fabric_dir)
+unset(_optical_fabric_resolved)
+unset(_optical_fabric_umbrella_found)
+
+check_required_components(OpticalFabric)

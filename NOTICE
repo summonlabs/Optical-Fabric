@@ -1,0 +1,20 @@
+Optical Fabric
+Copyright 2026 Summon Software Labs.
+
+Optical Fabric is an open-source, vendor-neutral runtime for governing optical
+connectivity and optical path state as an explicit control-plane boundary.
+
+This product is licensed under the Apache License, Version 2.0. See the
+LICENSE file in this distribution for the full license text.
+
+Optical Fabric does not collect or transmit any telemetry. All telemetry is
+written to local files chosen by the operator and never leaves the machine
+running the software.
+
+All optical devices, signals, and observations in this distribution are
+synthetic unless a deployment explicitly supplies real evidence through the
+documented typed interfaces. Optical Fabric never drives photonic hardware.
+
+Optical Fabric accepts contributions from individuals and organizations on the
+terms of the Apache License 2.0 without requiring a Contributor License
+Agreement (CLA). See CONTRIBUTING.md for contribution guidance.
