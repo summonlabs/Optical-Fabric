@@ -25,8 +25,6 @@ Contributor License Agreement (CLA) is required.
   (MSVC `/W4 /WX`, GCC/Clang `-Wall -Wextra -Wpedantic -Wshadow -Werror`).
 - New behavior must be covered by tests and pass the full test suite.
 - Documentation must be updated for public API or behavior changes.
-- Do not add timeouts or watchdogs to tests. A hanging test is a defect and must
-  be diagnosed, not masked.
 - No telemetry transmission: all measurements and observability data stay local
   and are written to operator-selected files.
 - Do not claim hardware behavior that the runtime does not implement. Optical
