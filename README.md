@@ -33,8 +33,8 @@ exists for a required fact, the runtime reports UNSUPPORTED and refuses to promo
 * Durable, versioned, integrity-checked and compacted state with conservative
   recovery.
 
-It does NOT absorb the Transceiver Registry, Wavelength Fabric, Optical Path
-Planner, Link Quality Fabric or Cable/Attachment Registry. Those are consumed
+It does NOT absorb the [Transceiver Registry](https://github.com/summonlabs/Transceiver-Registry), [Wavelength Fabric](https://github.com/summonlabs/Wavelength-Fabric), Optical Path
+Planner, [Link Quality Fabric](https://github.com/summonlabs/Link-Quality-Fabric) or Cable/Attachment Registry. Those are consumed
 through typed interfaces (`IEvidenceSource`, `IPlannerPort`) and their outputs are
 treated as evidence or proposals, never as authority. See `docs/ARCHITECTURE.md`.
 
