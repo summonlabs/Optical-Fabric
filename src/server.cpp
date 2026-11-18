@@ -220,23 +220,27 @@ int serve_connection(OpticalFabric& fabric, detail::SocketHandle socket, const L
       break;
     }
   }
-  detail::socket_shutdown(socket);
-  detail::socket_close(socket);
   return 0;
 }
 
 }  // namespace
 
 struct FabricNode::Impl {
+  // A connection thread and the flag it sets as its last step.
+  struct Worker {
+    std::thread thread;
+    std::shared_ptr<std::atomic<bool>> finished;
+  };
+
   std::mutex mutex;
   std::atomic<bool> stopping{false};
   detail::SocketHandle listener = detail::kInvalidSocket;
   std::vector<detail::SocketHandle> clients;
-  std::vector<std::thread> workers;
+  std::vector<Worker> workers;
   bool workers_joined = false;
 
   void join_workers() {
-    std::vector<std::thread> pending;
+    std::vector<Worker> pending;
     {
       std::lock_guard<std::mutex> guard(mutex);
       if (workers_joined) {
@@ -245,9 +249,31 @@ struct FabricNode::Impl {
       workers_joined = true;
       pending.swap(workers);
     }
-    for (std::thread& worker : pending) {
-      if (worker.joinable()) {
-        worker.join();
+    for (Worker& worker : pending) {
+      if (worker.thread.joinable()) {
+        worker.thread.join();
+      }
+    }
+  }
+
+  // Joins the connection threads that have finished. Every thread was kept,
+  // with its handle, until the node stopped.
+  void reap_finished_workers() {
+    std::vector<Worker> finished;
+    {
+      std::lock_guard<std::mutex> guard(mutex);
+      for (auto it = workers.begin(); it != workers.end();) {
+        if (it->finished->load()) {
+          finished.push_back(std::move(*it));
+          it = workers.erase(it);
+        } else {
+          ++it;
+        }
+      }
+    }
+    for (Worker& worker : finished) {
+      if (worker.thread.joinable()) {
+        worker.thread.join();
       }
     }
   }
@@ -325,17 +351,21 @@ Status FabricNode::serve() {
     if (!accepted.ok()) {
       break;
     }
-    if (impl_->stopping.load()) {
-      detail::socket_close(client);
-      break;
-    }
     bool accepted_connection = false;
+    bool stopping = false;
     {
+      // Checked under the lock stop() takes for its shutdown pass: a
+      // connection is either listed before that pass or closed here.
       std::lock_guard<std::mutex> guard(impl_->mutex);
-      if (impl_->clients.size() < limits_.max_connections) {
+      stopping = impl_->stopping.load();
+      if (!stopping && impl_->clients.size() < limits_.max_connections) {
         impl_->clients.push_back(client);
         accepted_connection = true;
       }
+    }
+    if (stopping) {
+      detail::socket_close(client);
+      break;
     }
     if (!accepted_connection) {
       // The connection bound is a real bound: the extra connection is refused
@@ -343,14 +373,23 @@ Status FabricNode::serve() {
       detail::socket_close(client);
       continue;
     }
-    std::thread worker([this, client]() {
+    impl_->reap_finished_workers();
+    auto finished = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([this, client, finished]() {
       serve_connection(*fabric_, client, limits_, &impl_->stopping);
-      std::lock_guard<std::mutex> guard(impl_->mutex);
-      impl_->clients.erase(std::remove(impl_->clients.begin(), impl_->clients.end(), client),
-                           impl_->clients.end());
+      {
+        // Delisted before the socket closes, so stop() never shuts down a
+        // handle that has been closed or reused.
+        std::lock_guard<std::mutex> guard(impl_->mutex);
+        impl_->clients.erase(std::remove(impl_->clients.begin(), impl_->clients.end(), client),
+                             impl_->clients.end());
+      }
+      detail::socket_shutdown(client);
+      detail::socket_close(client);
+      finished->store(true);
     });
     std::lock_guard<std::mutex> guard(impl_->mutex);
-    impl_->workers.push_back(std::move(worker));
+    impl_->workers.push_back(Impl::Worker{std::move(worker), std::move(finished)});
   }
   impl_->join_workers();
   running_.store(false);
@@ -360,6 +399,15 @@ Status FabricNode::serve() {
 void FabricNode::stop() {
   impl_->stopping.store(true);
   impl_->shutdown_all();
+  // shutdown() on a listening socket does not end a blocked accept() on
+  // Windows, so the accept loop is woken by a connection; it sees the stop and
+  // closes it.
+  if (running_.load() && bound_port_ != 0) {
+    detail::SocketHandle waker = detail::kInvalidSocket;
+    if (detail::socket_connect(bind_host_, bound_port_, waker).ok()) {
+      detail::socket_close(waker);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

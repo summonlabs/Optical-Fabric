@@ -229,6 +229,9 @@ void socket_shutdown(SocketHandle socket) {
   }
 #if defined(_WIN32)
   ::shutdown(static_cast<SOCKET>(socket), SD_BOTH);
+  // shutdown() does not end a recv() another thread is already blocked in on
+  // Windows; cancelling the socket's pending I/O does.
+  (void)::CancelIoEx(reinterpret_cast<HANDLE>(static_cast<SOCKET>(socket)), nullptr);
 #else
   ::shutdown(socket, SHUT_RDWR);
 #endif

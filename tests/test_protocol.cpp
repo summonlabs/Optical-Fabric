@@ -1,10 +1,26 @@
 // Optical Fabric 1.0.0 - Summon Software Labs
 // Framed transport: framing, bounds, corruption and message codec.
+#include <chrono>
+#include <cstdint>
+#include <future>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "optical_fabric/client.hpp"
 #include "optical_fabric/protocol.hpp"
+#include "optical_fabric/server.hpp"
 #include "test_harness.hpp"
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 namespace of = optical_fabric;
 
@@ -140,4 +156,139 @@ OF_TEST(protocol, escaping_is_lossless_for_every_byte_class) {
   std::string restored;
   OF_REQUIRE(!of::unescape_value("trailing\\", restored));
   OF_REQUIRE(!of::unescape_value("\\q", restored));
+}
+
+namespace {
+
+// A connection that lets a serve() still waiting in accept() see the stop, so a
+// failing case cannot hang the suite.
+void release_accept(std::uint16_t port) {
+  of::ClientOptions options;
+  options.port = port;
+  of::FabricClient waker(options);
+  if (waker.connect().ok()) {
+    waker.disconnect();
+  }
+}
+
+bool hello_round_trip(of::FabricClient& client) {
+  of::ProtocolMessage hello;
+  hello.operation = "hello";
+  return client.call(hello).ok();
+}
+
+}  // namespace
+
+OF_TEST(protocol, stopping_the_node_ends_serve_promptly) {
+  of::NodeOptions options;
+  options.announce = false;
+  of::FabricNode node(options);
+  OF_REQUIRE(node.start().ok());
+  const std::uint16_t port = node.bound_port();
+  std::promise<void> served;
+  std::future<void> done = served.get_future();
+  std::thread serving([&node, &served]() {
+    (void)node.serve();
+    served.set_value();
+  });
+  // One completed request proves the accept loop is running; once the client
+  // has left, serve() is back in accept() with nobody connected.
+  bool warmed = false;
+  {
+    of::ClientOptions client_options;
+    client_options.port = port;
+    of::FabricClient client(client_options);
+    warmed = client.connect().ok() && hello_round_trip(client);
+    client.disconnect();
+  }
+  node.stop();
+  const bool returned = done.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  if (!returned) {
+    release_accept(port);
+  }
+  serving.join();
+  OF_REQUIRE(warmed);
+  // stop() woke the accept loop with shutdown(), which does not end a blocked
+  // accept() on Windows, so serve() kept waiting for a connection.
+  OF_REQUIRE(returned);
+}
+
+OF_TEST(protocol, stopping_the_node_does_not_wait_for_an_idle_client) {
+  of::NodeOptions options;
+  options.announce = false;
+  of::FabricNode node(options);
+  OF_REQUIRE(node.start().ok());
+  const std::uint16_t port = node.bound_port();
+  std::promise<void> served;
+  std::future<void> done = served.get_future();
+  std::thread serving([&node, &served]() {
+    (void)node.serve();
+    served.set_value();
+  });
+  // One completed request proves a connection thread serves this client; the
+  // thread then waits in a receive for the client's next frame.
+  of::ClientOptions client_options;
+  client_options.port = port;
+  of::FabricClient client(client_options);
+  const bool connected = client.connect().ok();
+  const bool answered = connected && hello_round_trip(client);
+  node.stop();
+  const bool returned = done.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  client.disconnect();
+  if (!returned) {
+    release_accept(port);
+  }
+  serving.join();
+  OF_REQUIRE(connected);
+  OF_REQUIRE(answered);
+  // stop() shut the connection down, which on Windows does not end a receive
+  // already waiting, so serve() joined the connection thread only once the
+  // client left.
+  OF_REQUIRE(returned);
+}
+
+OF_TEST(protocol, finished_connection_threads_are_released) {
+#if defined(_WIN32)
+  of::NodeOptions options;
+  options.announce = false;
+  of::FabricNode node(options);
+  OF_REQUIRE(node.start().ok());
+  const std::uint16_t port = node.bound_port();
+  std::promise<void> served;
+  std::future<void> done = served.get_future();
+  std::thread serving([&node, &served]() {
+    (void)node.serve();
+    served.set_value();
+  });
+  const auto request = [port]() {
+    of::ClientOptions client_options;
+    client_options.port = port;
+    of::FabricClient client(client_options);
+    const bool answered = client.connect().ok() && hello_round_trip(client);
+    client.disconnect();
+    return answered;
+  };
+  const bool warmed = request();
+  DWORD before = 0;
+  ::GetProcessHandleCount(::GetCurrentProcess(), &before);
+  int answered = 0;
+  for (int index = 0; index < 100; ++index) {
+    if (request()) {
+      ++answered;
+    }
+  }
+  DWORD after = 0;
+  ::GetProcessHandleCount(::GetCurrentProcess(), &after);
+  node.stop();
+  const bool returned = done.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  if (!returned) {
+    release_accept(port);
+  }
+  serving.join();
+  OF_REQUIRE(warmed);
+  OF_REQUIRE(answered == 100);
+  // A connection thread that is never joined keeps its handle, so the count
+  // grew by about one per connection until the node stopped.
+  OF_REQUIRE(after < before + 64);
+#endif
 }

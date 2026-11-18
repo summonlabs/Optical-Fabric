@@ -2,8 +2,10 @@
 #include "store.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstring>
 #include <system_error>
+#include <thread>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -678,9 +680,38 @@ Status Store::rewrite(RecordKind kind, const std::string& payload) {
   // Close the live handle before replacing the file: the replacement reuses the
   // same path and must not race the handle that is being replaced.
   close_file(*impl_);
-  std::filesystem::rename(temporary, impl_->path, error);
+  // While a reader has the store file open (an inspection, an antivirus or
+  // indexing scan) the rename fails on Windows until the reader closes it, so
+  // it is retried for a bounded time (about 2 s); a directory in the way is not
+  // transient and fails at once.
+  for (int attempt = 0;; ++attempt) {
+    error.clear();
+    std::filesystem::rename(temporary, impl_->path, error);
+    if (!error) {
+      break;
+    }
+#if defined(_WIN32)
+    // ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION.
+    std::error_code probe;
+    const bool transient = error.category() == std::system_category() &&
+                           (error.value() == 5 || error.value() == 32 || error.value() == 33) &&
+                           !std::filesystem::is_directory(impl_->path, probe);
+#else
+    const bool transient = false;
+#endif
+    if (!transient || attempt >= 100) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
   if (error) {
     std::filesystem::remove(temporary, error);
+    // The store file is untouched, so it is reopened at the end of its records
+    // instead of staying closed while the store reports itself open.
+    if (open_file(*impl_, true).ok() &&
+        !seek_to(*impl_, valid_bytes_ + appended_bytes_).ok()) {
+      close_file(*impl_);
+    }
     return Status::failure(ErrorCode::StoreIo, "cannot replace the store with its compaction");
   }
   const Status reopened = open_file(*impl_, true);

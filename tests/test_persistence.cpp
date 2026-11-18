@@ -1,9 +1,11 @@
 // Optical Fabric 1.0.0 - Summon Software Labs
 // Durability: recovery, restart semantics, corruption and truncation.
+#include <chrono>
 #include <cstdio>
 #include <fstream>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "optical_fabric/optical_fabric.hpp"
@@ -313,6 +315,32 @@ OF_TEST(persistence, a_second_writer_is_refused) {
   OF_REQUIRE(session->fabric->close().ok());
   of::OpticalFabric third(options);
   OF_REQUIRE(!third.closed());
+}
+
+OF_TEST(persistence, compaction_waits_for_a_reader_of_the_store) {
+  TempDirectory directory;
+  of::FabricOptions options = store_options(directory, "fabric.store");
+  // Every commit is followed by a compaction that replaces the store file.
+  options.limits.max_journal_bytes = 1;
+  std::unique_ptr<Session> session = of_test::make_session(options, "reader");
+  of::OpticalFabric& fabric = *session->fabric;
+  bool reader_opened = false;
+  bool committed = false;
+  {
+    // An inspection of the store holds the file open while a commit's
+    // compaction replaces it, and closes it shortly after.
+    std::ifstream reader(directory.file("fabric.store"), std::ios::binary);
+    reader_opened = reader.is_open();
+    std::thread committer([&fabric, &committed] { committed = fabric.advance_tick(1).ok(); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    reader.close();
+    committer.join();
+  }
+  OF_REQUIRE(reader_opened);
+  // The replacement waits for the reader instead of failing the commit and
+  // leaving the runtime refusing every later mutation.
+  OF_REQUIRE(committed);
+  OF_REQUIRE(fabric.advance_tick(1).ok());
 }
 
 OF_TEST(persistence, compaction_bounds_growth_and_preserves_state) {

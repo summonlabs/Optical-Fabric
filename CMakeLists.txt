@@ -60,6 +60,8 @@ function(optical_fabric_apply_warnings target)
   if(OPTICAL_FABRIC_ENABLE_ASAN)
     if(MSVC)
       target_compile_options(${target} PRIVATE /fsanitize=address /Zi)
+      # /DEBUG: linking sanitizer objects without it gives LNK4302.
+      target_link_options(${target} PRIVATE /INCREMENTAL:NO /DEBUG)
     else()
       target_compile_options(${target} PRIVATE -fsanitize=address -fno-omit-frame-pointer -g)
       target_link_options(${target} PRIVATE -fsanitize=address)
